@@ -8,6 +8,7 @@ import 'package:ffmpeg_kit_flutter_video/return_code.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'waveform_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
@@ -213,66 +214,60 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Future<void> _processVideo() async {
     if (_videoFile == null || _isLoading) return;
 
-    setState(() {
-      _isLoading = true;
-      _loadingMessage = 'Mastering Engine Audio…';
-      _statusMessage = null;
-    });
+    final cacheDir = await getTemporaryDirectory();
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final tempOutput = p.join(cacheDir.path, 'exhaust_studio_$timestamp.mp4');
+    final inputPath = _videoFile!.path;
+    final filter = _filterChain;
+    final command = '-y -i "$inputPath" -c:v copy -af "$filter" "$tempOutput"';
 
-    try {
-      // Build a temp output path in app cache
-      final cacheDir = await getTemporaryDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final tempOutput = p.join(cacheDir.path, 'exhaust_studio_$timestamp.mp4');
+    debugPrint('[ExhaustStudio] Running FFmpeg: $command');
 
-      final inputPath = _videoFile!.path;
-      final filter = _filterChain;
+    if (!mounted) return;
 
-      // FFmpeg command:
-      //  -c:v copy  → pass video stream untouched (no re-encode = fast)
-      //  -af "..."  → full psychoacoustic pipeline on audio track only
-      //  -y         → overwrite output without prompting
-      final command =
-          '-y -i "$inputPath" -c:v copy -af "$filter" "$tempOutput"';
-
-      debugPrint('[ExhaustStudio] Running FFmpeg: $command');
-
-      final session = await FFmpegKit.execute(command);
-      final returnCode = await session.getReturnCode();
-
-      if (!ReturnCode.isSuccess(returnCode)) {
-        final logs = await session.getAllLogsAsString();
-        debugPrint('[ExhaustStudio] FFmpeg failed:\n$logs');
-        throw Exception('FFmpeg processing failed (code: $returnCode)');
-      }
-
-      // Move finished file to public gallery via MediaStore
-      setState(() => _loadingMessage = 'Saving to Gallery…');
-      final savedPath = await _saveToGallery(tempOutput, timestamp);
-
-      // Clean up temp file
-      try { File(tempOutput).deleteSync(); } catch (_) {}
-
-      setState(() {
-        _isLoading = false;
-        _statusMessage = 'Saved → $savedPath';
-        _statusIsError = false;
-      });
-
-      if (mounted) {
-        _showSuccessSheet(savedPath);
-      }
-    } catch (e) {
-      debugPrint('[ExhaustStudio] Error: $e');
-      setState(() {
-        _isLoading = false;
-        _statusMessage = e.toString();
-        _statusIsError = true;
-      });
-      if (mounted) {
-        _showStatus('Processing failed. Check logs.', isError: true);
-      }
-    }
+    // Navigate to the WaveformScreen — it drives the FFmpeg session and shows
+    // a live amplitude visualiser driven by the session log stream.
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WaveformScreen(
+          inputPath: inputPath,
+          outputPath: tempOutput,
+          ffmpegCommand: command,
+          onComplete: () async {
+            // Back on the WaveformScreen's context — save to gallery then pop
+            try {
+              final savedPath = await _saveToGallery(tempOutput, timestamp);
+              try { File(tempOutput).deleteSync(); } catch (_) {}
+              if (mounted) {
+                Navigator.pop(context); // pop WaveformScreen
+                _showSuccessSheet(savedPath);
+                setState(() {
+                  _statusMessage = 'Saved → $savedPath';
+                  _statusIsError = false;
+                });
+              }
+            } catch (e) {
+              if (mounted) {
+                Navigator.pop(context);
+                _showStatus('Gallery save failed: $e', isError: true);
+              }
+            }
+          },
+          onError: (err) {
+            debugPrint('[ExhaustStudio] FFmpeg failed:\n$err');
+            if (mounted) {
+              Navigator.pop(context);
+              setState(() {
+                _statusMessage = err;
+                _statusIsError = true;
+              });
+              _showStatus('Processing failed. Check logs.', isError: true);
+            }
+          },
+        ),
+      ),
+    );
   }
 
   /// Saves the processed file to the public Android gallery (MediaStore-safe).
