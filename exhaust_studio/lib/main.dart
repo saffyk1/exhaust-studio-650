@@ -8,6 +8,7 @@ import 'package:ffmpeg_kit_flutter_video/return_code.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:gal/gal.dart';
 import 'waveform_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,65 +271,33 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  /// Saves the processed file to the public Android gallery (MediaStore-safe).
-  /// On Android 10+ (API 29+) we use MediaStore via a platform channel approach:
-  /// write to Movies/ExhaustStudio using the content resolver.
+  /// Saves the processed video to the device gallery using the `gal` package.
+  ///
+  /// On Android (API 29+) `gal` writes directly into MediaStore so the file
+  /// appears in the native Gallery under the "ExhaustStudio" album immediately
+  /// — no manual media-scan intent required.
+  /// On Android ≤28 it falls back to writing into the public Movies directory
+  /// and fires ACTION_MEDIA_SCANNER_SCAN_FILE internally.
+  /// On iOS it writes to PHPhotoLibrary.
   Future<String> _saveToGallery(String tempPath, int timestamp) async {
-    // On Android we ideally use MediaStore. Since ffmpeg_kit already writes
-    // the file to a temp path, we use the gallery_saver-style approach:
-    // copy into the public Movies directory using platform scoped path.
-    final fileName = 'ExhaustStudio_$timestamp.mp4';
-
-    if (Platform.isAndroid) {
-      // Android 10+ scoped storage: write to app-specific external Movies dir
-      // which is publicly visible without WRITE_EXTERNAL_STORAGE permission.
-      final extDir = await _getAndroidPublicMoviesDir();
-      final destDir = Directory(p.join(extDir, 'ExhaustStudio'));
-      if (!destDir.existsSync()) destDir.createSync(recursive: true);
-      final destPath = p.join(destDir.path, fileName);
-      File(tempPath).copySync(destPath);
-
-      // Trigger media scanner so it shows in Gallery immediately
-      await _triggerMediaScan(destPath);
-      return destPath;
-    } else {
-      // iOS: save to app Documents and open share sheet
-      final docsDir = await getApplicationDocumentsDirectory();
-      final destPath = p.join(docsDir.path, fileName);
-      File(tempPath).copySync(destPath);
-      return destPath;
+    // Request gallery write access (no-op on Android 10+, needed on iOS).
+    final hasAccess = await Gal.hasAccess(toAlbum: true);
+    if (!hasAccess) {
+      final granted = await Gal.requestAccess(toAlbum: true);
+      if (!granted) {
+        throw Exception(
+          'Gallery access denied. Please allow Photos / Media access in Settings.',
+        );
+      }
     }
-  }
 
-  /// Returns the absolute path to the public Movies folder on Android.
-  /// Uses a MethodChannel to call Environment.getExternalStoragePublicDirectory.
-  Future<String> _getAndroidPublicMoviesDir() async {
-    try {
-      const channel = MethodChannel('exhaust_studio/media');
-      final path = await channel.invokeMethod<String>('getPublicMoviesDir');
-      if (path != null && path.isNotEmpty) return path;
-    } catch (_) {
-      // Fall back if native channel not wired up (e.g. in simulator)
-    }
-    // Fallback: use getExternalStorageDirectory and go up to emulated/0/Movies
-    final dir = await getExternalStorageDirectory();
-    // getExternalStorageDirectory returns .../Android/data/... — walk up 4 levels
-    final parts = dir!.path.split('/');
-    final idx = parts.indexOf('Android');
-    if (idx > 0) {
-      return '${parts.sublist(0, idx).join('/')}/Movies';
-    }
-    return dir.path;
-  }
+    // Save the video and place it in our named album.
+    // `gal` triggers MediaStore indexing automatically on Android,
+    // so the file shows up in Gallery without any extra scan call.
+    await Gal.putVideo(tempPath, album: 'ExhaustStudio');
 
-  /// Sends an ACTION_MEDIA_SCANNER_SCAN_FILE intent via MethodChannel
-  Future<void> _triggerMediaScan(String filePath) async {
-    try {
-      const channel = MethodChannel('exhaust_studio/media');
-      await channel.invokeMethod('scanFile', {'path': filePath});
-    } catch (_) {
-      // Non-fatal: file exists, gallery will index it on next scan
-    }
+    // Return a human-readable label for the success sheet.
+    return 'Gallery › ExhaustStudio › ExhaustStudio_$timestamp.mp4';
   }
 
   // ── UI helpers ─────────────────────────────────────────────────────────────
