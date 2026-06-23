@@ -36,7 +36,7 @@ jobs:
 
       - name: Clean Gradle cache
         working-directory: ./exhaust_studio/android
-        run: ./gradlew clean
+        run: cd exhaust_studio/android && ./gradlew clean
 
       - name: Build APK (release)
         working-directory: ./exhaust_studio
