@@ -1,8 +1,64 @@
 import { useState, useRef, useEffect } from "react";
 
 type Screen = "home" | "processing" | "preview";
+type TuningMode = "manual" | "presets";
 
-// ── Filter chain built from individual manual params ───────────────────────
+// ── Filter params ──────────────────────────────────────────────────────────
+interface FilterParams {
+  hpfHz: number; lpfHz: number;
+  eq1Gain: number; eq2Gain: number;
+  compThresh: number; compRatio: number;
+  volDb: number; limDb: number;
+}
+
+const DEFAULT_PARAMS: FilterParams = {
+  hpfHz: 120, lpfHz: 6500,
+  eq1Gain: 6.0, eq2Gain: 3.0,
+  compThresh: -12, compRatio: 4.0,
+  volDb: 2.0, limDb: -1.0,
+};
+
+// ── Preset type ────────────────────────────────────────────────────────────
+interface Preset {
+  name: string;
+  desc: string;
+  params: FilterParams;
+  custom?: boolean;
+}
+
+const BUILT_IN_PRESETS: Preset[] = [
+  {
+    name: "Default",
+    desc: "Balanced settings for most bikes",
+    params: DEFAULT_PARAMS,
+  },
+  {
+    name: "Track Day",
+    desc: "Aggressive bark, tight noise floor",
+    params: { hpfHz: 180, lpfHz: 5000, eq1Gain: 9.0, eq2Gain: 5.0, compThresh: -10, compRatio: 6.0, volDb: 3.0, limDb: -0.5 },
+  },
+  {
+    name: "Deep Rumble",
+    desc: "Maximum bass body, full exhaust tone",
+    params: { hpfHz: 70, lpfHz: 6000, eq1Gain: 12.0, eq2Gain: 2.0, compThresh: -14, compRatio: 5.0, volDb: 4.0, limDb: -0.5 },
+  },
+  {
+    name: "Street Cruise",
+    desc: "Everyday riding, smooth and natural",
+    params: { hpfHz: 100, lpfHz: 7500, eq1Gain: 5.0, eq2Gain: 3.0, compThresh: -12, compRatio: 3.5, volDb: 2.0, limDb: -1.5 },
+  },
+  {
+    name: "Wet Road",
+    desc: "Gentle cleanup, preserves natural sound",
+    params: { hpfHz: 80, lpfHz: 8500, eq1Gain: 3.0, eq2Gain: 1.5, compThresh: -18, compRatio: 2.5, volDb: 1.0, limDb: -2.0 },
+  },
+  {
+    name: "Race Mode",
+    desc: "Maximum presence, competition exhaust",
+    params: { hpfHz: 200, lpfHz: 4500, eq1Gain: 10.0, eq2Gain: 6.0, compThresh: -8, compRatio: 8.0, volDb: 4.0, limDb: -0.5 },
+  },
+];
+
 function buildFilterChain(p: FilterParams) {
   return [
     `highpass=f=${p.hpfHz}`,
@@ -15,30 +71,15 @@ function buildFilterChain(p: FilterParams) {
   ].join(", ");
 }
 
-interface FilterParams {
-  hpfHz: number;
-  lpfHz: number;
-  eq1Gain: number;
-  eq2Gain: number;
-  compThresh: number;
-  compRatio: number;
-  volDb: number;
-  limDb: number;
-}
-
-const DEFAULT_PARAMS: FilterParams = {
-  hpfHz: 120, lpfHz: 6500,
-  eq1Gain: 6.0, eq2Gain: 3.0,
-  compThresh: -12, compRatio: 4.0,
-  volDb: 2.0, limDb: -1.0,
-};
-
 const C = {
   bg: "#141414", surface: "#1A1A1A", border: "#2A2A2A",
   dim: "#383838", mid: "#555555", muted: "#888888", text: "#E8E8E8",
   orange: "#FF6B00", amber: "#FFAA00", green: "#00E676", appBar: "#0D0D0D",
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT
+// ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [screen,   setScreen]   = useState<Screen>("home");
   const [params,   setParams]   = useState<FilterParams>(DEFAULT_PARAMS);
@@ -46,27 +87,9 @@ export default function App() {
 
   return (
     <div style={{ background: C.bg, minHeight: "100dvh", fontFamily: "monospace", color: C.text, maxWidth: 480, margin: "0 auto" }}>
-      {screen === "home" && (
-        <HomeScreen
-          params={params} setParams={setParams}
-          videoUrl={videoUrl} setVideoUrl={setVideoUrl}
-          onProcess={() => setScreen("processing")}
-        />
-      )}
-      {screen === "processing" && (
-        <ProcessingScreen
-          params={params}
-          onReady={() => setScreen("preview")}
-          onError={() => setScreen("home")}
-        />
-      )}
-      {screen === "preview" && (
-        <PreviewScreen
-          videoUrl={videoUrl} params={params}
-          onSave={() => { alert("Saved to Gallery › ExhaustStudio ✓"); setScreen("home"); }}
-          onDiscard={() => setScreen("home")}
-        />
-      )}
+      {screen === "home"       && <HomeScreen params={params} setParams={setParams} videoUrl={videoUrl} setVideoUrl={setVideoUrl} onProcess={() => setScreen("processing")} />}
+      {screen === "processing" && <ProcessingScreen params={params} onReady={() => setScreen("preview")} onError={() => setScreen("home")} />}
+      {screen === "preview"    && <PreviewScreen videoUrl={videoUrl} params={params} onSave={() => { alert("Saved to Gallery › ExhaustStudio ✓"); setScreen("home"); }} onDiscard={() => setScreen("home")} />}
     </div>
   );
 }
@@ -81,23 +104,71 @@ function HomeScreen({ params, setParams, videoUrl, setVideoUrl, onProcess }: {
 }) {
   const fileRef  = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [playing, setPlaying] = useState(false);
-  const [manualOpen, setManualOpen] = useState(false);
+  const [playing,     setPlaying]     = useState(false);
+  const [tuningMode,  setTuningMode]  = useState<TuningMode>("presets");
+  const [selectedPreset, setSelectedPreset] = useState<string>("Default");
+  const [manualParams,   setManualParams]   = useState<FilterParams>(DEFAULT_PARAMS);
+  const [customPresets,  setCustomPresets]  = useState<Preset[]>(() => {
+    try { return JSON.parse(localStorage.getItem("exhaustStudioPresets") || "[]"); }
+    catch { return []; }
+  });
+  const [saveName,     setSaveName]     = useState("");
+  const [showSaveInput, setShowSaveInput] = useState(false);
 
-  // Quick sliders (0–1) derived from current params
-  const noiseVal = ((params.hpfHz - 60) / 120);
-  const depthVal = (params.eq1Gain / 12).toFixed(2);
-
-  function setP(patch: Partial<FilterParams>) {
-    setParams({ ...params, ...patch });
+  // Switch modes
+  function switchToManual() {
+    setTuningMode("manual");
+    setManualParams(DEFAULT_PARAMS);
+    setParams(DEFAULT_PARAMS);
+    setSelectedPreset("");
   }
 
-  function onNoiseSlider(v: number) {
-    setP({ hpfHz: Math.round(60 + v * 120), lpfHz: Math.round(9000 - v * 5000) });
+  function switchToPresets() {
+    setTuningMode("presets");
+    // Reapply the selected preset (or Default)
+    const name = selectedPreset || "Default";
+    const all  = [...BUILT_IN_PRESETS, ...customPresets];
+    const hit  = all.find(p => p.name === name) ?? BUILT_IN_PRESETS[0];
+    setSelectedPreset(hit.name);
+    setParams(hit.params);
   }
 
-  function onDepthSlider(v: number) {
-    setP({ eq1Gain: Math.round(v * 120) / 10 });
+  function applyPreset(preset: Preset) {
+    setSelectedPreset(preset.name);
+    setParams(preset.params);
+    setManualParams(preset.params);
+  }
+
+  function setManual(patch: Partial<FilterParams>) {
+    const next = { ...manualParams, ...patch };
+    setManualParams(next);
+    setParams(next);
+  }
+
+  function saveCustomPreset() {
+    const name = saveName.trim();
+    if (!name) return;
+    if ([...BUILT_IN_PRESETS, ...customPresets].some(p => p.name === name)) {
+      alert(`A preset named "${name}" already exists.`); return;
+    }
+    const preset: Preset = { name, desc: "Custom preset", params: { ...params }, custom: true };
+    const updated = [...customPresets, preset];
+    setCustomPresets(updated);
+    localStorage.setItem("exhaustStudioPresets", JSON.stringify(updated));
+    setSaveName("");
+    setShowSaveInput(false);
+    setSelectedPreset(name);
+    setTuningMode("presets");
+  }
+
+  function deleteCustomPreset(name: string) {
+    const updated = customPresets.filter(p => p.name !== name);
+    setCustomPresets(updated);
+    localStorage.setItem("exhaustStudioPresets", JSON.stringify(updated));
+    if (selectedPreset === name) {
+      setSelectedPreset("Default");
+      setParams(DEFAULT_PARAMS);
+    }
   }
 
   function pickVideo(e: React.ChangeEvent<HTMLInputElement>) {
@@ -120,7 +191,7 @@ function HomeScreen({ params, setParams, videoUrl, setVideoUrl, onProcess }: {
     ["LPF",  `${params.lpfHz}Hz cut`,          "Strips tyre hiss & valve tick"],
     ["EQ1",  `${params.eq1Gain >= 0 ? "+" : ""}${params.eq1Gain.toFixed(1)}dB@200Hz`, "Mid-bass harmonic body"],
     ["EQ2",  `${params.eq2Gain >= 0 ? "+" : ""}${params.eq2Gain.toFixed(1)}dB@2500Hz`, "Engine bark & firing snap"],
-    ["COMP", `${params.compThresh.toFixed(0)}dB thr / ${params.compRatio.toFixed(1)}:1`, "Broadcast-density compression"],
+    ["COMP", `${params.compThresh.toFixed(0)}dB / ${params.compRatio.toFixed(1)}:1`, "Broadcast-density compression"],
     ["VOL",  `${params.volDb >= 0 ? "+" : ""}${params.volDb.toFixed(1)}dB`, "Output level trim"],
     ["LIM",  `${params.limDb.toFixed(1)}dBFS ceiling`, "Hard limiter — zero clip"],
   ];
@@ -131,30 +202,20 @@ function HomeScreen({ params, setParams, videoUrl, setVideoUrl, onProcess }: {
       <div style={{ padding: "16px 16px 100px" }}>
 
         {/* Video zone */}
-        <div
-          onClick={videoUrl ? undefined : () => fileRef.current?.click()}
-          style={{ aspectRatio: "16/9", background: C.surface, border: `1.5px solid ${videoUrl ? "#333" : C.dim}`, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", cursor: videoUrl ? "default" : "pointer", position: "relative", marginBottom: 28 }}
-        >
+        <div onClick={videoUrl ? undefined : () => fileRef.current?.click()}
+          style={{ aspectRatio: "16/9", background: C.surface, border: `1.5px solid ${videoUrl ? "#333" : C.dim}`, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", cursor: videoUrl ? "default" : "pointer", position: "relative", marginBottom: 28 }}>
           {videoUrl ? (
             <>
               <video ref={videoRef} src={videoUrl} loop style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               <div onClick={togglePlay} style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                {!playing && (
-                  <div style={{ width: 52, height: 52, borderRadius: "50%", background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <span style={{ fontSize: 22, color: "#fff", marginLeft: 4 }}>▶</span>
-                  </div>
-                )}
+                {!playing && <div style={{ width: 52, height: 52, borderRadius: "50%", background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontSize: 22, color: "#fff", marginLeft: 4 }}>▶</span></div>}
               </div>
               <button onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}
-                style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.7)", border: `1px solid ${C.border}`, borderRadius: 3, padding: "3px 8px", fontSize: 10, color: "#AAA", fontFamily: "monospace", letterSpacing: 1, cursor: "pointer" }}>
-                REPLACE
-              </button>
+                style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.7)", border: `1px solid ${C.border}`, borderRadius: 3, padding: "3px 8px", fontSize: 10, color: "#AAA", fontFamily: "monospace", letterSpacing: 1, cursor: "pointer" }}>REPLACE</button>
             </>
           ) : (
             <div style={{ textAlign: "center" }}>
-              <div style={{ width: 60, height: 60, borderRadius: "50%", border: `1.5px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px" }}>
-                <span style={{ fontSize: 24, color: C.mid }}>+</span>
-              </div>
+              <div style={{ width: 60, height: 60, borderRadius: "50%", border: `1.5px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px" }}><span style={{ fontSize: 24, color: C.mid }}>+</span></div>
               <div style={{ fontSize: 13, color: C.mid, letterSpacing: 1.2 }}>Upload Ride Video</div>
               <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>tap to select from gallery</div>
             </div>
@@ -162,58 +223,84 @@ function HomeScreen({ params, setParams, videoUrl, setVideoUrl, onProcess }: {
         </div>
         <input ref={fileRef} type="file" accept="video/*" style={{ display: "none" }} onChange={pickVideo} />
 
-        {/* ── TUNING ── */}
-        <SectionLabel label="TUNING" />
-        <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 24 }}>
-          <SliderRow
-            icon="⧖" label="Noise Cleanup"
-            sub={`HPF ${params.hpfHz}Hz / LPF ${params.lpfHz}Hz`}
-            value={noiseVal} left="OPEN" right="TIGHT"
-            onChange={onNoiseSlider}
-          />
-          <SliderRow
-            icon="〜" label="Exhaust Deepness"
-            sub={`200Hz bass ${params.eq1Gain >= 0 ? "+" : ""}${params.eq1Gain.toFixed(1)}dB`}
-            value={+depthVal} left="FLAT" right="+12dB"
-            onChange={onDepthSlider}
-          />
-        </div>
+        {/* ── TUNING PROFILE ── */}
+        <SectionLabel label="TUNING PROFILE" />
+        <div style={{ marginTop: 14 }}>
 
-        {/* ── MANUAL TUNING (collapsible) ── */}
-        <div style={{ marginTop: 28 }}>
-          <button
-            onClick={() => setManualOpen(o => !o)}
-            style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-          >
-            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2.5, color: C.orange, fontFamily: "monospace" }}>MANUAL TUNING</span>
-            <span style={{ color: C.orange, fontSize: 13 }}>{manualOpen ? "▲" : "▼"}</span>
-            <div style={{ flex: 1, height: 1, background: C.border }} />
-          </button>
+          {/* Tab switcher */}
+          <div style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3, marginBottom: 20, gap: 3 }}>
+            {(["presets", "manual"] as TuningMode[]).map(mode => (
+              <button key={mode} onClick={mode === "manual" ? switchToManual : switchToPresets}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 4, border: "none", cursor: "pointer", fontFamily: "monospace", fontSize: 11, fontWeight: 700, letterSpacing: 1.5, transition: "all 0.18s",
+                  background: tuningMode === mode ? C.orange : "transparent",
+                  color: tuningMode === mode ? "#000" : C.muted,
+                }}>
+                {mode === "manual" ? "MANUAL TUNING" : "PRESETS"}
+              </button>
+            ))}
+          </div>
 
-          {manualOpen && (
-            <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 0 }}>
-              <ParamSlider label="HPF FREQUENCY" valueStr={`${params.hpfHz} Hz`} value={params.hpfHz} min={60} max={300} step={1}
-                onChange={v => setP({ hpfHz: v })} />
-              <ParamSlider label="LPF FREQUENCY" valueStr={`${params.lpfHz} Hz`} value={params.lpfHz} min={1000} max={20000} step={100}
-                onChange={v => setP({ lpfHz: v })} />
-              <ParamSlider label="EQ 200Hz GAIN" valueStr={`${params.eq1Gain >= 0 ? "+" : ""}${params.eq1Gain.toFixed(1)} dB`} value={params.eq1Gain} min={-12} max={12} step={0.5}
-                onChange={v => setP({ eq1Gain: v })} />
-              <ParamSlider label="EQ 2500Hz GAIN" valueStr={`${params.eq2Gain >= 0 ? "+" : ""}${params.eq2Gain.toFixed(1)} dB`} value={params.eq2Gain} min={-12} max={12} step={0.5}
-                onChange={v => setP({ eq2Gain: v })} />
-              <ParamSlider label="COMP THRESHOLD" valueStr={`${params.compThresh.toFixed(0)} dB`} value={params.compThresh} min={-40} max={0} step={1}
-                onChange={v => setP({ compThresh: v })} />
-              <ParamSlider label="COMP RATIO" valueStr={`${params.compRatio.toFixed(1)} : 1`} value={params.compRatio} min={1} max={20} step={0.5}
-                onChange={v => setP({ compRatio: v })} />
-              <ParamSlider label="VOLUME BOOST" valueStr={`${params.volDb >= 0 ? "+" : ""}${params.volDb.toFixed(1)} dB`} value={params.volDb} min={-12} max={12} step={0.5}
-                onChange={v => setP({ volDb: v })} />
-              <ParamSlider label="LIMITER CEILING" valueStr={`${params.limDb.toFixed(1)} dBFS`} value={params.limDb} min={-12} max={0} step={0.1}
-                onChange={v => setP({ limDb: +v.toFixed(1) })} />
+          {/* PRESETS panel */}
+          {tuningMode === "presets" && (
+            <div>
+              <div style={{ fontSize: 9, color: C.mid, letterSpacing: 1.5, marginBottom: 12 }}>BUILT-IN</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 20 }}>
+                {BUILT_IN_PRESETS.map(preset => (
+                  <PresetCard key={preset.name} preset={preset} isSelected={selectedPreset === preset.name} onSelect={() => applyPreset(preset)} />
+                ))}
+              </div>
 
-              {/* Reset to defaults */}
-              <button
-                onClick={() => { setParams(DEFAULT_PARAMS); }}
-                style={{ marginTop: 12, background: "none", border: `1px solid ${C.border}`, borderRadius: 3, color: C.mid, fontSize: 10, fontFamily: "monospace", letterSpacing: 1.5, padding: "6px 12px", cursor: "pointer", alignSelf: "flex-start" }}
-              >RESET TO DEFAULTS</button>
+              {customPresets.length > 0 && (
+                <>
+                  <div style={{ fontSize: 9, color: C.mid, letterSpacing: 1.5, marginBottom: 12 }}>MY PRESETS</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 20 }}>
+                    {customPresets.map(preset => (
+                      <PresetCard key={preset.name} preset={preset} isSelected={selectedPreset === preset.name} onSelect={() => applyPreset(preset)} onDelete={() => deleteCustomPreset(preset.name)} />
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Save current as preset */}
+              {!showSaveInput ? (
+                <button onClick={() => setShowSaveInput(true)}
+                  style={{ width: "100%", padding: "10px", background: "transparent", border: `1px dashed ${C.border}`, borderRadius: 6, color: C.mid, fontFamily: "monospace", fontSize: 11, letterSpacing: 1.5, cursor: "pointer" }}>
+                  + SAVE CURRENT SETTINGS AS PRESET
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input autoFocus value={saveName} onChange={e => setSaveName(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") saveCustomPreset(); if (e.key === "Escape") { setShowSaveInput(false); setSaveName(""); } }}
+                    placeholder="Preset name…"
+                    style={{ flex: 1, background: C.surface, border: `1px solid ${C.orange}`, borderRadius: 4, padding: "9px 12px", color: C.text, fontFamily: "monospace", fontSize: 12, outline: "none" }} />
+                  <button onClick={saveCustomPreset}
+                    style={{ padding: "9px 16px", background: C.orange, border: "none", borderRadius: 4, color: "#000", fontFamily: "monospace", fontSize: 12, fontWeight: 800, cursor: "pointer", letterSpacing: 1 }}>SAVE</button>
+                  <button onClick={() => { setShowSaveInput(false); setSaveName(""); }}
+                    style={{ padding: "9px 12px", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 4, color: C.mid, fontFamily: "monospace", fontSize: 12, cursor: "pointer" }}>✕</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* MANUAL TUNING panel */}
+          {tuningMode === "manual" && (
+            <div>
+              <div style={{ fontSize: 9, color: C.mid, letterSpacing: 1.5, marginBottom: 16 }}>EDIT PARAMETERS · defaults loaded</div>
+              <ParamSlider label="HPF FREQUENCY"  valueStr={`${manualParams.hpfHz} Hz`}        value={manualParams.hpfHz}      min={60}  max={300}  step={1}   onChange={v => setManual({ hpfHz: v })} />
+              <ParamSlider label="LPF FREQUENCY"  valueStr={`${manualParams.lpfHz} Hz`}        value={manualParams.lpfHz}      min={1000} max={20000} step={100} onChange={v => setManual({ lpfHz: v })} />
+              <ParamSlider label="EQ 200Hz GAIN"  valueStr={`${manualParams.eq1Gain >= 0 ? "+" : ""}${manualParams.eq1Gain.toFixed(1)} dB`} value={manualParams.eq1Gain} min={-12} max={12} step={0.5} onChange={v => setManual({ eq1Gain: v })} />
+              <ParamSlider label="EQ 2500Hz GAIN" valueStr={`${manualParams.eq2Gain >= 0 ? "+" : ""}${manualParams.eq2Gain.toFixed(1)} dB`} value={manualParams.eq2Gain} min={-12} max={12} step={0.5} onChange={v => setManual({ eq2Gain: v })} />
+              <ParamSlider label="COMP THRESHOLD" valueStr={`${manualParams.compThresh.toFixed(0)} dB`}     value={manualParams.compThresh} min={-40} max={0}  step={1}   onChange={v => setManual({ compThresh: v })} />
+              <ParamSlider label="COMP RATIO"     valueStr={`${manualParams.compRatio.toFixed(1)} : 1`}     value={manualParams.compRatio}  min={1}   max={20} step={0.5} onChange={v => setManual({ compRatio: v })} />
+              <ParamSlider label="VOLUME BOOST"   valueStr={`${manualParams.volDb >= 0 ? "+" : ""}${manualParams.volDb.toFixed(1)} dB`}   value={manualParams.volDb}     min={-12} max={12} step={0.5} onChange={v => setManual({ volDb: v })} />
+              <ParamSlider label="LIMITER CEILING" valueStr={`${manualParams.limDb.toFixed(1)} dBFS`}       value={manualParams.limDb}     min={-12} max={0}  step={0.1} onChange={v => setManual({ limDb: +v.toFixed(1) })} />
+
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <button onClick={() => { setManualParams(DEFAULT_PARAMS); setParams(DEFAULT_PARAMS); }}
+                  style={{ padding: "8px 14px", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 4, color: C.mid, fontFamily: "monospace", fontSize: 10, letterSpacing: 1.2, cursor: "pointer" }}>RESET</button>
+                <button onClick={() => { setShowSaveInput(true); setTuningMode("presets"); }}
+                  style={{ flex: 1, padding: "8px 14px", background: "transparent", border: `1px dashed ${C.border}`, borderRadius: 4, color: C.mid, fontFamily: "monospace", fontSize: 10, letterSpacing: 1.2, cursor: "pointer" }}>+ SAVE AS PRESET</button>
+              </div>
             </div>
           )}
         </div>
@@ -246,15 +333,34 @@ function HomeScreen({ params, setParams, videoUrl, setVideoUrl, onProcess }: {
         </div>
 
         {/* ── Enhance button ── */}
-        <button
-          onClick={videoUrl ? onProcess : undefined}
-          style={{ width: "100%", height: 56, background: videoUrl ? C.orange : "#2A2A2A", color: videoUrl ? "#000" : C.mid, border: "none", borderRadius: 4, cursor: videoUrl ? "pointer" : "not-allowed", fontSize: 14, fontWeight: 800, letterSpacing: 1.6, fontFamily: "monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-        >
+        <button onClick={videoUrl ? onProcess : undefined}
+          style={{ width: "100%", height: 56, background: videoUrl ? C.orange : "#2A2A2A", color: videoUrl ? "#000" : C.mid, border: "none", borderRadius: 4, cursor: videoUrl ? "pointer" : "not-allowed", fontSize: 14, fontWeight: 800, letterSpacing: 1.6, fontFamily: "monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
           <span style={{ fontSize: 18 }}>⚡</span> ENHANCE & PREVIEW
         </button>
         {!videoUrl && <p style={{ textAlign: "center", fontSize: 10, color: C.dim, marginTop: 8 }}>upload a video above to enable processing</p>}
       </div>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRESET CARD
+// ─────────────────────────────────────────────────────────────────────────────
+function PresetCard({ preset, isSelected, onSelect, onDelete }: {
+  preset: Preset; isSelected: boolean; onSelect(): void; onDelete?(): void;
+}) {
+  return (
+    <div onClick={onSelect} style={{ border: `1.5px solid ${isSelected ? C.orange : C.border}`, borderRadius: 6, padding: "12px 12px 10px", cursor: "pointer", background: isSelected ? "rgba(255,107,0,0.07)" : C.surface, position: "relative", transition: "border-color 0.15s, background 0.15s" }}>
+      {onDelete && (
+        <button onClick={e => { e.stopPropagation(); onDelete(); }}
+          style={{ position: "absolute", top: 6, right: 6, background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 2px", lineHeight: 1 }}>×</button>
+      )}
+      <div style={{ fontSize: 11, fontWeight: 700, color: isSelected ? C.orange : "#CCC", letterSpacing: 1.1, marginBottom: 4, paddingRight: onDelete ? 16 : 0 }}>{preset.name}</div>
+      <div style={{ fontSize: 10, color: C.mid, lineHeight: 1.4, marginBottom: 6 }}>{preset.desc}</div>
+      <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>
+        {preset.params.hpfHz}Hz · {preset.params.eq1Gain >= 0 ? "+" : ""}{preset.params.eq1Gain.toFixed(1)}dB · {preset.params.compRatio.toFixed(1)}:1
+      </div>
+    </div>
   );
 }
 
@@ -293,11 +399,9 @@ function ProcessingScreen({ params, onReady, onError }: {
     let idx = 0;
     const timer = setInterval(() => {
       if (idx >= STAGES.length) {
-        clearInterval(timer);
-        setProgress(1);
+        clearInterval(timer); setProgress(1);
         setLogLine("Processing complete — preview ready");
-        setTimeout(onReady, 600);
-        return;
+        setTimeout(onReady, 600); return;
       }
       const msg = STAGES[idx++];
       setLogLine(msg);
@@ -321,8 +425,7 @@ function ProcessingScreen({ params, onReady, onError }: {
   useEffect(() => {
     let raf: number;
     function tick() {
-      phaseRef.current += 0.05;
-      frameRef.current++;
+      phaseRef.current += 0.05; frameRef.current++;
       if (frameRef.current % 3 === 0) {
         setBars(prev => prev.map((b, i) => {
           const wave = (Math.sin(phaseRef.current + i * 0.4) + 1) / 2;
@@ -336,16 +439,15 @@ function ProcessingScreen({ params, onReady, onError }: {
   }, []);
 
   const pct = Math.round(progress * 100);
-
   return (
     <>
       <AppBar title="PROCESSING" />
-      <div style={{ padding: "24px 20px", display: "flex", flexDirection: "column", minHeight: "calc(100dvh - 54px)" }}>
+      <div style={{ padding: "24px 20px" }}>
         <StatusPill label="MASTERING ENGINE AUDIO" color={C.orange} pulse />
         <div style={{ height: 40 }} />
         <div style={{ height: 140, display: "flex", alignItems: "flex-end", gap: 3, marginBottom: 32 }}>
           {bars.map((amp, i) => (
-            <div key={i} style={{ flex: 1, height: `${Math.max(2, amp * 140)}px`, background: amp > 0.1 ? `rgba(255,${Math.round(107 + (170 - 107) * Math.min(1, (amp - 0.5) * 2))},0,${0.3 + amp * 0.7})` : C.border, borderRadius: "2px 2px 0 0", transition: "height 60ms linear" }} />
+            <div key={i} style={{ flex: 1, height: `${Math.max(2, amp * 140)}px`, background: amp > 0.1 ? `rgba(255,${Math.round(107 + 63 * Math.min(1, (amp - 0.5) * 2))},0,${0.3 + amp * 0.7})` : C.border, borderRadius: "2px 2px 0 0", transition: "height 60ms linear" }} />
           ))}
         </div>
         <div style={{ marginBottom: 20 }}>
@@ -369,8 +471,7 @@ function ProcessingScreen({ params, onReady, onError }: {
 // PREVIEW SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 function PreviewScreen({ videoUrl, params, onSave, onDiscard }: {
-  videoUrl: string | null; params: FilterParams;
-  onSave(): void; onDiscard(): void;
+  videoUrl: string | null; params: FilterParams; onSave(): void; onDiscard(): void;
 }) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const [playing,  setPlaying]  = useState(false);
@@ -385,15 +486,13 @@ function PreviewScreen({ videoUrl, params, onSave, onDiscard }: {
   }
 
   function fmt(s: number) {
-    const m = Math.floor(s / 60).toString().padStart(2, "0");
-    const sec = Math.floor(s % 60).toString().padStart(2, "0");
-    return `${m}:${sec}`;
+    return `${Math.floor(s / 60).toString().padStart(2, "0")}:${Math.floor(s % 60).toString().padStart(2, "0")}`;
   }
 
   return (
     <>
       <AppBar title="PREVIEW" onBack={onDiscard} />
-      <div style={{ padding: "24px 20px 40px", display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "24px 20px 40px" }}>
         <StatusPill label="ENHANCED — READY TO PREVIEW" color={C.green} />
         <div style={{ height: 24 }} />
         <div style={{ aspectRatio: "16/9", background: "#000", borderRadius: 6, overflow: "hidden", position: "relative", marginBottom: 12 }}>
@@ -402,9 +501,7 @@ function PreviewScreen({ videoUrl, params, onSave, onDiscard }: {
                 onTimeUpdate={e => setPosition((e.target as HTMLVideoElement).currentTime)}
                 onLoadedMetadata={e => setDuration((e.target as HTMLVideoElement).duration)}
                 onEnded={() => setPlaying(false)} />
-            : <div style={{ width: "100%", height: "100%", background: "#111", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <span style={{ fontSize: 11, color: C.mid }}>No video source</span>
-              </div>
+            : <div style={{ width: "100%", height: "100%", background: "#111", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontSize: 11, color: C.mid }}>No video source</span></div>
           }
           <div onClick={togglePlay} style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
             <div style={{ width: 64, height: 64, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: `1.5px solid ${C.orange}99`, display: "flex", alignItems: "center", justifyContent: "center", opacity: playing ? 0 : 1, transition: "opacity 0.2s" }}>
@@ -415,20 +512,12 @@ function PreviewScreen({ videoUrl, params, onSave, onDiscard }: {
         <input type="range" min={0} max={duration || 100} step={0.1} value={position}
           onChange={e => { const v = videoRef.current; if (v) v.currentTime = +e.target.value; setPosition(+e.target.value); }}
           style={{ width: "100%", accentColor: C.orange, cursor: "pointer", marginBottom: 4 }} />
-        <div style={{ display: "flex", justifyContent: "space-between", paddingInline: 12, marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", paddingInline: 12, marginBottom: 24 }}>
           <span style={{ fontSize: 10, color: "#666", fontFamily: "monospace" }}>{fmt(position)}</span>
           <span style={{ fontSize: 10, color: "#666", fontFamily: "monospace" }}>{fmt(duration)}</span>
         </div>
-        <div style={{ background: "#0F0F0F", border: `1px solid ${C.border}`, borderRadius: 4, padding: "10px 12px", marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 14, color: C.orange }}>≡</span>
-          <span style={{ fontSize: 9, color: "#555", letterSpacing: 0.5 }}>
-            HPF {params.hpfHz}Hz · LPF {params.lpfHz}Hz · EQ {params.eq1Gain >= 0 ? "+" : ""}{params.eq1Gain.toFixed(1)}dB@200Hz · Comp {params.compThresh.toFixed(0)}dB/{params.compRatio.toFixed(1)}:1 · Vol {params.volDb >= 0 ? "+" : ""}{params.volDb.toFixed(1)}dB · Lim {params.limDb.toFixed(1)}dBFS
-          </span>
-        </div>
         <div style={{ background: "#0F0F0F", border: `1px solid ${C.border}`, borderRadius: 4, padding: "10px 12px", marginBottom: 32 }}>
-          <code style={{ fontSize: 9, color: "#3A3A3A", lineHeight: 1.6, display: "block", wordBreak: "break-all" }}>
-            {buildFilterChain(params)}
-          </code>
+          <code style={{ fontSize: 9, color: "#3A3A3A", lineHeight: 1.6, display: "block", wordBreak: "break-all" }}>{buildFilterChain(params)}</code>
         </div>
         <button onClick={onSave} style={{ width: "100%", height: 56, background: C.orange, color: "#000", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 14, fontWeight: 800, letterSpacing: 1.6, fontFamily: "monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 12 }}>
           <span>⬇</span> SAVE TO GALLERY
@@ -447,14 +536,10 @@ function PreviewScreen({ videoUrl, params, onSave, onDiscard }: {
 function AppBar({ title, onBack }: { title: string; onBack?: () => void }) {
   return (
     <div style={{ background: C.appBar, padding: "14px 16px", display: "flex", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 10 }}>
-      {onBack && (
-        <button onClick={onBack} style={{ background: "none", border: "none", color: C.mid, cursor: "pointer", fontSize: 18, padding: 0, lineHeight: 1 }}>✕</button>
-      )}
+      {onBack && <button onClick={onBack} style={{ background: "none", border: "none", color: C.mid, cursor: "pointer", fontSize: 18, padding: 0, lineHeight: 1 }}>✕</button>}
       <span style={{ fontSize: 16, color: C.orange }}>≡</span>
       <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: 1.6, color: C.orange }}>{title}</span>
-      {title === "EXHAUST STUDIO" && (
-        <span style={{ fontSize: 10, border: `1px solid ${C.orange}`, color: C.orange, padding: "1px 5px", borderRadius: 2, letterSpacing: 1 }}>650</span>
-      )}
+      {title === "EXHAUST STUDIO" && <span style={{ fontSize: 10, border: `1px solid ${C.orange}`, color: C.orange, padding: "1px 5px", borderRadius: 2, letterSpacing: 1 }}>650</span>}
     </div>
   );
 }
@@ -477,32 +562,8 @@ function SectionLabel({ label }: { label: string }) {
   );
 }
 
-function SliderRow({ icon, label, sub, value, left, right, onChange }: {
-  icon: string; label: string; sub: string; value: number;
-  left: string; right: string; onChange(v: number): void;
-}) {
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <span style={{ color: C.orange, fontSize: 13 }}>{icon}</span>
-        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1.4, color: "#CCC" }}>{label.toUpperCase()}</span>
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: C.orange, letterSpacing: 0.5 }}>{sub}</span>
-      </div>
-      <input type="range" min={0} max={1} step={0.01} value={value}
-        onChange={e => onChange(+e.target.value)}
-        style={{ width: "100%", accentColor: C.orange, cursor: "pointer" }} />
-      <div style={{ display: "flex", justifyContent: "space-between", paddingInline: 12 }}>
-        <span style={{ fontSize: 9, color: "#444", letterSpacing: 1 }}>{left}</span>
-        <span style={{ fontSize: 9, color: "#444", letterSpacing: 1 }}>{right}</span>
-      </div>
-    </div>
-  );
-}
-
 function ParamSlider({ label, valueStr, value, min, max, step, onChange }: {
-  label: string; valueStr: string; value: number; min: number; max: number; step: number;
-  onChange(v: number): void;
+  label: string; valueStr: string; value: number; min: number; max: number; step: number; onChange(v: number): void;
 }) {
   return (
     <div style={{ marginBottom: 18 }}>
@@ -510,8 +571,7 @@ function ParamSlider({ label, valueStr, value, min, max, step, onChange }: {
         <span style={{ fontSize: 10, letterSpacing: 1.2, color: C.muted }}>{label}</span>
         <span style={{ fontSize: 11, color: C.orange, fontWeight: 700 }}>{valueStr}</span>
       </div>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(+e.target.value)}
+      <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)}
         style={{ width: "100%", accentColor: C.orange, cursor: "pointer" }} />
       <div style={{ display: "flex", justifyContent: "space-between", paddingInline: 12 }}>
         <span style={{ fontSize: 9, color: "#444" }}>{min}</span>
