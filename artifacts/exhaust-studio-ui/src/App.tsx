@@ -44,9 +44,9 @@ function buildFilterChain(p: FilterParams) {
 }
 
 const C = {
-  bg: "#141414", surface: "#1A1A1A", border: "#2A2A2A",
-  dim: "#383838", mid: "#555555", muted: "#888888", text: "#E8E8E8",
-  orange: "#FF6B00", amber: "#FFAA00", green: "#00E676", appBar: "#0D0D0D",
+  bg: "#000000", surface: "#111111", border: "#222222",
+  dim: "#303030", mid: "#555555", muted: "#888888", text: "#E8E8E8",
+  orange: "#FF6B00", amber: "#FFAA00", green: "#00E676", appBar: "#000000",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,9 +188,7 @@ export default function App() {
   // ── Tuning mode switches ──────────────────────────────────────────────────
   function switchToManual() {
     setTuningMode("manual");
-    setManualParams(DEFAULT_PARAMS);
-    setParams(DEFAULT_PARAMS);
-    setSelectedPreset("");
+    setManualParams(params);
   }
 
   function switchToPresets() {
