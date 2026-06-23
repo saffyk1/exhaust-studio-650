@@ -34,6 +34,10 @@ jobs:
         working-directory: ./exhaust_studio
         run: flutter pub get
 
+      - name: Clean Gradle cache
+        working-directory: ./exhaust_studio/android
+        run: ./gradlew clean
+
       - name: Build APK (release)
         working-directory: ./exhaust_studio
         run: flutter build apk --release
