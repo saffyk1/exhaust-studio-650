@@ -37,10 +37,6 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Clean Gradle
-        working-directory: exhaust_studio/android
-        run: ./gradlew clean
-
       - name: Build release APK
         run: flutter build apk --release
 
