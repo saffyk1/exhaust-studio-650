@@ -10,16 +10,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      # Setup Java (IMPORTANT for Gradle)
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
           cache: gradle
 
+      # Setup Flutter
       - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -27,23 +30,26 @@ jobs:
           channel: stable
           cache: true
 
+      # Debug info
       - name: Flutter doctor
         run: flutter doctor -v
 
+      # Get dependencies (ROOT project)
       - name: Get dependencies
-        working-directory: ./exhaust_studio
         run: flutter pub get
 
-      - name: Clean Gradle cache
-        working-directory: ./exhaust_studio/android
-        run: cd exhaust_studio/android && ./gradlew clean
+      # Clean Android build (correct path now)
+      - name: Clean Gradle
+        working-directory: android
+        run: ./gradlew clean
 
-      - name: Build APK (release)
-        working-directory: ./exhaust_studio
+      # Build APK
+      - name: Build release APK
         run: flutter build apk --release
 
+      # Upload APK
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
-          path: exhaust_studio/build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
