@@ -123,21 +123,32 @@ function connectOriginal(e: AudioEngine) {
   e.analyser.connect(e.ctx.destination);
 }
 
-function connectEnhanced(e: AudioEngine, p: FilterParams, ncLevel: number) {
+function connectEnhanced(e: AudioEngine, p: FilterParams, ncLevel: number, ncOrder: "before" | "after") {
   disconnectAll(e);
   applyParams(e, p);
   applyNC(e, ncLevel);
-  // enhanced path: source → main chain → NC shelves → analyser → out
-  e.source.connect(e.hpf);
+  // NC before tuning:  source → ncLo → ncHi → hpf → lpf → eq1 → eq2 → comp → vol → lim → analyser → out
+  // NC after tuning:   source → hpf → lpf → eq1 → eq2 → comp → vol → lim → ncLo → ncHi → analyser → out
+  if (ncOrder === "before") {
+    e.source.connect(e.ncLoShelf);
+    e.ncLoShelf.connect(e.ncHiShelf);
+    e.ncHiShelf.connect(e.hpf);
+  } else {
+    e.source.connect(e.hpf);
+  }
   e.hpf.connect(e.lpf);
   e.lpf.connect(e.eq1);
   e.eq1.connect(e.eq2);
   e.eq2.connect(e.comp);
   e.comp.connect(e.vol);
   e.vol.connect(e.lim);
-  e.lim.connect(e.ncLoShelf);
-  e.ncLoShelf.connect(e.ncHiShelf);
-  e.ncHiShelf.connect(e.analyser);
+  if (ncOrder === "after") {
+    e.lim.connect(e.ncLoShelf);
+    e.ncLoShelf.connect(e.ncHiShelf);
+    e.ncHiShelf.connect(e.analyser);
+  } else {
+    e.lim.connect(e.analyser);
+  }
   e.analyser.connect(e.ctx.destination);
 }
 
@@ -168,8 +179,9 @@ export default function App() {
   const [showSaveInput, setShowSaveInput] = useState(false);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
 
-  // Noise cancellation: 0 = off, 1–100 = active
+  // Noise cancellation: 0 = off, 1–100 = active; order controls chain position
   const [ncLevel, setNcLevel] = useState(0);
+  const [ncOrder, setNcOrder] = useState<"before" | "after">("before");
 
   // ── Audio engine init ──────────────────────────────────────────────────────
   const initEngine = useCallback(() => {
@@ -178,8 +190,8 @@ export default function App() {
     const source = ctx.createMediaElementSource(videoRef.current);
     engineRef.current = buildEngine(ctx, source);
     if (audioMode === "original") connectOriginal(engineRef.current);
-    else                          connectEnhanced(engineRef.current, params, ncLevel);
-  }, [audioMode, params, ncLevel]);
+    else                          connectEnhanced(engineRef.current, params, ncLevel, ncOrder);
+  }, [audioMode, params, ncLevel, ncOrder]);
 
   // ── Sync filter params live ────────────────────────────────────────────────
   useEffect(() => {
@@ -188,12 +200,19 @@ export default function App() {
     applyParams(e, params);
   }, [params, audioMode]);
 
-  // ── Sync NC live ───────────────────────────────────────────────────────────
+  // ── Sync NC live (level update only) ──────────────────────────────────────
   useEffect(() => {
     const e = engineRef.current;
     if (!e || audioMode !== "enhanced") return;
     applyNC(e, ncLevel);
   }, [ncLevel, audioMode]);
+
+  // ── Rewire chain when NC order changes ────────────────────────────────────
+  useEffect(() => {
+    const e = engineRef.current;
+    if (!e || audioMode !== "enhanced") return;
+    connectEnhanced(e, params, ncLevel, ncOrder);
+  }, [ncOrder]);
 
   // ── FFT animation loop — canvas overlay only, no impact on audio/video ────
   useEffect(() => {
@@ -240,7 +259,7 @@ export default function App() {
     const e = engineRef.current;
     if (!e) return;
     if (mode === "original") connectOriginal(e);
-    else                     connectEnhanced(e, params, ncLevel);
+    else                     connectEnhanced(e, params, ncLevel, ncOrder);
   }
 
   // ── Video ──────────────────────────────────────────────────────────────────
@@ -300,7 +319,12 @@ export default function App() {
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
-  const pipelineStages: [string, string, string][] = [
+  const ncStages: [string, string, string][] = ncLevel > 0 ? [
+    ["NC·L", `−${(18 * ncLevel / 100).toFixed(1)}dB@80Hz`,  "Road rumble suppression (below exhaust)"],
+    ["NC·H", `−${(30 * ncLevel / 100).toFixed(1)}dB@8kHz`,  "Wind & hiss suppression (above exhaust)"],
+  ] : [];
+
+  const mainStages: [string, string, string][] = [
     ["HPF",  `${params.hpfHz}Hz cut`,          "Removes wind buffet & chassis rumble"],
     ["LPF",  `${params.lpfHz}Hz cut`,          "Strips tyre hiss & valve tick"],
     ["EQ1",  `${params.eq1Gain >= 0 ? "+" : ""}${params.eq1Gain.toFixed(1)}dB@200Hz`, "Mid-bass harmonic body"],
@@ -308,11 +332,10 @@ export default function App() {
     ["COMP", `${params.compThresh.toFixed(0)}dB / ${params.compRatio.toFixed(1)}:1`, "Broadcast-density compression"],
     ["VOL",  `${params.volDb >= 0 ? "+" : ""}${params.volDb.toFixed(1)}dB`, "Output level trim"],
     ["LIM",  `${params.limDb.toFixed(1)}dBFS ceiling`, "Hard limiter — zero clip"],
-    ...(ncLevel > 0 ? [
-      ["NC·L", `${-(18 * ncLevel / 100).toFixed(1)}dB@80Hz`,   "Road rumble suppression (below exhaust)"] as [string,string,string],
-      ["NC·H", `${-(30 * ncLevel / 100).toFixed(1)}dB@8kHz`,   "Wind & hiss suppression (above exhaust)"] as [string,string,string],
-    ] : []),
   ];
+
+  const pipelineStages: [string, string, string][] =
+    ncOrder === "before" ? [...ncStages, ...mainStages] : [...mainStages, ...ncStages];
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
@@ -399,6 +422,8 @@ export default function App() {
         {/* ── NOISE CANCELLATION ── */}
         <SectionLabel label="NOISE CANCELLATION" />
         <div style={{ marginTop: 14, background: C.surface, border: `1px solid ${ncLevel > 0 ? C.orange + "55" : C.border}`, borderRadius: 8, padding: "14px 16px", transition: "border-color 0.2s" }}>
+
+          {/* Level row */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
             <button onClick={() => setNcLevel(0)}
               style={{ padding: "5px 12px", borderRadius: 4, border: `1px solid ${ncLevel === 0 ? "#666" : C.border}`, background: ncLevel === 0 ? "#2A2A2A" : "transparent", color: ncLevel === 0 ? "#CCC" : C.mid, fontFamily: "monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.5, cursor: "pointer", flexShrink: 0 }}>OFF</button>
@@ -406,6 +431,18 @@ export default function App() {
               onChange={e => setNcLevel(+e.target.value)}
               style={{ flex: 1, accentColor: C.orange, cursor: "pointer" }} />
             <span style={{ fontSize: 13, fontWeight: 700, color: ncLevel > 0 ? C.orange : C.mid, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{ncLevel > 0 ? ncLevel : "—"}</span>
+          </div>
+
+          {/* Sequence toggle */}
+          <div style={{ display: "flex", background: "#0A0A0A", border: `1px solid ${C.border}`, borderRadius: 5, padding: 2, marginBottom: 12, gap: 2 }}>
+            {(["before", "after"] as const).map(o => (
+              <button key={o} onClick={() => setNcOrder(o)}
+                style={{ flex: 1, padding: "6px 0", border: "none", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.2, transition: "all 0.15s",
+                  background: ncOrder === o ? (ncLevel > 0 ? C.orange : "#2A2A2A") : "transparent",
+                  color: ncOrder === o ? (ncLevel > 0 ? "#000" : "#CCC") : C.mid }}>
+                {o === "before" ? "BEFORE TUNING" : "AFTER TUNING"}
+              </button>
+            ))}
           </div>
 
           {ncLevel > 0 ? (
